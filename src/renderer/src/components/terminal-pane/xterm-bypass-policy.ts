@@ -43,6 +43,11 @@ export type XtermImeKeyboardOptions = {
   /** True while Linux/Sogou candidate-selection keys (Space/digits) are
    *  IME-owned: live composition plus a short post-compositionend window. */
   candidateKeyGuardActive: boolean
+  /** True while an Enter keypress belongs to a composition commit: live
+   *  composition plus a short post-compositionend window. macOS Hangul commits
+   *  deliver the committing Enter's keypress after compositionend with
+   *  isComposing already false, so composition state alone cannot catch it. */
+  commitKeypressGuardActive: boolean
   /** True when the pending-release guard already matched this specific event. */
   pendingCandidateKeyReleaseActive: boolean
   /** True for the narrow Linux path where the IME emits an orphaned letter
@@ -87,6 +92,31 @@ function isXtermHandledKeyEvent(type: string): boolean {
   return type === 'keydown' || type === 'keyup'
 }
 
+/**
+ * Returns whether this keypress is the newline of a composition-committing
+ * Enter and must be deferred until the committed glyph has flushed.
+ *
+ * A suppressed Enter keydown leaves xterm's `_keyDownHandled` false, so the
+ * trailing keypress reaches `_keyPress` and sends `\r` synchronously — ahead
+ * of the committed glyph, which xterm flushes on a post-compositionend
+ * `setTimeout(0)`. A normally handled Enter marks `_keyDownHandled` and its
+ * keypress never consults the custom handler, so this cannot affect plain
+ * typing (#8038).
+ */
+export function isTerminalImeCommitEnterKeypress(
+  event: XtermBypassEvent,
+  options: XtermImeKeyboardOptions
+): boolean {
+  return (
+    event.type === 'keypress' &&
+    options.commitKeypressGuardActive &&
+    (event.key === 'Enter' || event.keyCode === 13) &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  )
+}
+
 /** Returns whether xterm must not process an IME-owned keyboard event. */
 export function shouldSuppressTerminalImeKeyboardEvent(
   event: XtermBypassEvent,
@@ -110,8 +140,9 @@ export function shouldSuppressTerminalImeKeyboardEvent(
   if (event.type === 'keypress') {
     // Why: a suppressed candidate keydown is not preventDefault-ed by xterm,
     // so its native keypress still fires and _keyPress would forward the
-    // literal Space/digit to the PTY.
-    return suppressCandidateKey
+    // literal Space/digit to the PTY. The committing Enter's keypress would
+    // likewise send `\r` ahead of the pending glyph flush (#8038).
+    return suppressCandidateKey || isTerminalImeCommitEnterKeypress(event, options)
   }
   if (!isXtermHandledKeyEvent(event.type)) {
     return false

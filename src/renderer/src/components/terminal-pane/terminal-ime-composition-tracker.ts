@@ -6,6 +6,11 @@ export type TerminalImeCompositionTracker = IDisposable & {
    *  IME-owned: during a live composition, and briefly after compositionend to
    *  absorb the committing key's trailing press/release. */
   isCandidateKeyGuardActive: () => boolean
+  /** True while an Enter keypress belongs to a composition commit: during a
+   *  live composition, and briefly after compositionend — macOS Hangul commits
+   *  deliver the committing Enter's keypress after compositionend fires, with
+   *  isComposing already false. */
+  isCommitKeypressGuardActive: () => boolean
 }
 
 // Why: suppressed candidate keys are preventDefault-ed and fire no input
@@ -16,6 +21,11 @@ export const TERMINAL_IME_CANDIDATE_GUARD_STALE_COMPOSITION_EXPIRY_MS = 10_000
 // keyup after compositionend; a narrow window absorbs those trailing events
 // without making the keys globally unavailable after IME use.
 export const TERMINAL_IME_CANDIDATE_GUARD_POST_COMPOSITION_MS = 250
+// Why: the committing Enter's keypress trails compositionend by under a
+// millisecond in traces; the window only needs to absorb that same-turn
+// keypress, and a real standalone Enter cannot arrive this fast after a
+// commit that its keydown did not participate in.
+export const TERMINAL_IME_COMMIT_KEYPRESS_GUARD_MS = 250
 
 export function installTerminalImeCompositionTracker(
   terminalElement: HTMLElement | null | undefined,
@@ -25,6 +35,7 @@ export function installTerminalImeCompositionTracker(
   let active = false
   let lastCompositionEventAt: number | null = null
   let compositionEndedAt: number | null = null
+  let commitCompositionEndedAt: number | null = null
   let sawEmptyCompositionUpdate = false
 
   const isActiveAt = (at: number): boolean =>
@@ -43,10 +54,22 @@ export function installTerminalImeCompositionTracker(
     )
   }
 
+  const isCommitKeypressGuardActive = (): boolean => {
+    const at = now()
+    if (isActiveAt(at)) {
+      return true
+    }
+    return (
+      commitCompositionEndedAt !== null &&
+      at - commitCompositionEndedAt <= TERMINAL_IME_COMMIT_KEYPRESS_GUARD_MS
+    )
+  }
+
   if (!terminalElement) {
     return {
       isActive: () => active,
       isCandidateKeyGuardActive,
+      isCommitKeypressGuardActive,
       dispose: () => undefined
     }
   }
@@ -76,6 +99,9 @@ export function installTerminalImeCompositionTracker(
     // Why: only Sogou/fcitx-style empty updates prove a trailing plain
     // Space/digit is likely IME-owned; broad post-end guards drop real typing.
     compositionEndedAt = sawEmptyCompositionUpdate ? now() : null
+    // Why: unconditional — every commit can be Enter-driven, and the
+    // committing Enter's keypress arrives after this event on macOS.
+    commitCompositionEndedAt = now()
     sawEmptyCompositionUpdate = false
   }
   const handleInput = (event: Event): void => {
@@ -86,12 +112,14 @@ export function installTerminalImeCompositionTracker(
     // Why: real non-composition input means ordinary typing resumed; keeping
     // the post-end window would swallow a legitimate Space/digit.
     compositionEndedAt = null
+    commitCompositionEndedAt = null
     sawEmptyCompositionUpdate = false
   }
   const markInactive = (): void => {
     active = false
     lastCompositionEventAt = null
     compositionEndedAt = null
+    commitCompositionEndedAt = null
     sawEmptyCompositionUpdate = false
   }
 
@@ -104,6 +132,7 @@ export function installTerminalImeCompositionTracker(
   return {
     isActive: () => isActiveAt(now()),
     isCandidateKeyGuardActive,
+    isCommitKeypressGuardActive,
     dispose: () => {
       terminalElement.removeEventListener('compositionstart', markActive, true)
       terminalElement.removeEventListener('compositionupdate', updateComposition, true)

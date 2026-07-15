@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isTerminalImeCommitEnterKeypress,
   shouldBypassXtermKeyboardEvent,
   shouldPreventDefaultTerminalImeCandidateKey,
   shouldSuppressTerminalImeKeyboardEvent
@@ -156,14 +157,16 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
     isLinux: false,
     compositionActive: false,
     candidateKeyGuardActive: false,
-    pendingCandidateKeyReleaseActive: false
+    pendingCandidateKeyReleaseActive: false,
+    commitKeypressGuardActive: false
   }
   const composing = {
     isMac: true,
     isLinux: false,
     compositionActive: true,
     candidateKeyGuardActive: true,
-    pendingCandidateKeyReleaseActive: false
+    pendingCandidateKeyReleaseActive: false,
+    commitKeypressGuardActive: false
   }
 
   it('suppresses keyboard events while Chromium reports active IME composition', () => {
@@ -251,5 +254,69 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
     expect(
       shouldPreventDefaultTerminalImeCandidateKey(event({ key: ' ', code: 'Space' }), composing)
     ).toBe(false)
+  })
+
+  describe('composition-committing Enter keypress (#8038)', () => {
+    // Why: macOS Hangul commits deliver Enter's keypress *after*
+    // compositionend with isComposing=false — only the tracker's post-commit
+    // window can identify it. The synchronous `\r` it would send races ahead
+    // of xterm's setTimeout(0) glyph flush.
+    const commitAdjacent = { ...idle, commitKeypressGuardActive: true }
+    const enterKeypress = event({
+      type: 'keypress',
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      isComposing: false
+    })
+
+    it('suppresses and defers the Enter keypress inside the commit window', () => {
+      expect(shouldSuppressTerminalImeKeyboardEvent(enterKeypress, commitAdjacent)).toBe(true)
+      expect(isTerminalImeCommitEnterKeypress(enterKeypress, commitAdjacent)).toBe(true)
+    })
+
+    it('matches on legacy keyCode 13 when key is empty', () => {
+      const legacyEnter = event({ type: 'keypress', key: '', keyCode: 13 })
+      expect(isTerminalImeCommitEnterKeypress(legacyEnter, commitAdjacent)).toBe(true)
+    })
+
+    it('suppresses the Enter keypress while the composition is still open', () => {
+      const composingGuard = { ...composing, commitKeypressGuardActive: true }
+      expect(
+        shouldSuppressTerminalImeKeyboardEvent(
+          event({ type: 'keypress', key: 'Enter', keyCode: 13, isComposing: true }),
+          composingGuard
+        )
+      ).toBe(true)
+    })
+
+    it('lets a standalone Enter keypress through outside the commit window', () => {
+      expect(shouldSuppressTerminalImeKeyboardEvent(enterKeypress, idle)).toBe(false)
+      expect(isTerminalImeCommitEnterKeypress(enterKeypress, idle)).toBe(false)
+    })
+
+    it('still passes committed-text keypresses inside the commit window', () => {
+      expect(
+        shouldSuppressTerminalImeKeyboardEvent(
+          event({ type: 'keypress', key: '中', code: '' }),
+          commitAdjacent
+        )
+      ).toBe(false)
+    })
+
+    it('ignores modifier chords and non-keypress Enter events', () => {
+      expect(
+        isTerminalImeCommitEnterKeypress(
+          event({ type: 'keypress', key: 'Enter', keyCode: 13, ctrlKey: true }),
+          commitAdjacent
+        )
+      ).toBe(false)
+      expect(
+        isTerminalImeCommitEnterKeypress(
+          event({ type: 'keydown', key: 'Enter', keyCode: 13 }),
+          commitAdjacent
+        )
+      ).toBe(false)
+    })
   })
 })

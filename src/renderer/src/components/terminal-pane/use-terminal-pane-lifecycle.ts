@@ -82,7 +82,9 @@ import {
   getMacNativeTextInputSourceTracker
 } from './terminal-ime-input-source'
 import { installTerminalImeNativeTextForwarder } from './terminal-ime-native-text-forwarder'
+import { sendTerminalEnterAfterImeCommit } from './terminal-ime-enter-commit-newline'
 import {
+  isTerminalImeCommitEnterKeypress,
   shouldBypassXtermKeyboardEvent,
   shouldHandleTerminalInterruptKeyboardEvent,
   shouldPreventDefaultTerminalImeCandidateKey,
@@ -953,6 +955,7 @@ export function useTerminalPaneLifecycle({
             candidateKeyGuardActive:
               imeCompositionTracker.isCandidateKeyGuardActive() ||
               pendingCandidateReleaseGuardActive,
+            commitKeypressGuardActive: imeCompositionTracker.isCommitKeypressGuardActive(),
             pendingCandidateKeyReleaseActive: pendingCandidateReleaseGuardActive,
             linuxOrphanCandidateDigitGuardActive:
               linuxCandidateClassification.candidateDigitGuardActive,
@@ -972,6 +975,17 @@ export function useTerminalPaneLifecycle({
                 e,
                 now
               )
+            }
+            if (isTerminalImeCommitEnterKeypress(e, imeKeyboardOptions)) {
+              // Why: without preventDefault the suppressed Enter keypress still
+              // inserts a line break into the helper textarea, and the
+              // composition diff flushes it as a second stray newline.
+              e.preventDefault()
+              sendTerminalEnterAfterImeCommit({
+                terminalElement: pane.terminal.element,
+                isCompositionActive: () => imeCompositionTracker.isActive(),
+                send: () => pane.terminal.input('\r')
+              })
             }
             observeLinuxCandidateEvent()
             return false

@@ -4,6 +4,7 @@ import {
   installTerminalImeCompositionTracker,
   TERMINAL_IME_CANDIDATE_GUARD_POST_COMPOSITION_MS,
   TERMINAL_IME_CANDIDATE_GUARD_STALE_COMPOSITION_EXPIRY_MS,
+  TERMINAL_IME_COMMIT_KEYPRESS_GUARD_MS,
   type TerminalImeCompositionTracker
 } from './terminal-ime-composition-tracker'
 
@@ -154,10 +155,50 @@ describe('installTerminalImeCompositionTracker', () => {
     })
   })
 
+  describe('commit keypress guard', () => {
+    it('is active during a live composition', () => {
+      const harness = installTracker()
+      harness.composition('compositionstart', '')
+      harness.composition('compositionupdate', '하')
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(true)
+    })
+
+    it('absorbs the committing Enter keypress after every compositionend, then expires', () => {
+      // Why: unlike the Sogou candidate guard, macOS Hangul commits need this
+      // window without any empty-compositionupdate precondition.
+      const harness = installTracker()
+      harness.composition('compositionstart', '')
+      harness.composition('compositionupdate', '하')
+      harness.composition('compositionend', '하')
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(true)
+      harness.advance(TERMINAL_IME_COMMIT_KEYPRESS_GUARD_MS)
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(true)
+      harness.advance(1)
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(false)
+    })
+
+    it('drops the post-commit window once ordinary typing resumes', () => {
+      const harness = installTracker()
+      harness.composition('compositionstart', '')
+      harness.composition('compositionend', '하')
+      harness.input('insertText')
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(false)
+    })
+
+    it('drops the post-commit window on blur', () => {
+      const harness = installTracker()
+      harness.composition('compositionstart', '')
+      harness.composition('compositionend', '하')
+      harness.blur()
+      expect(harness.tracker.isCommitKeypressGuardActive()).toBe(false)
+    })
+  })
+
   it('handles a missing terminal element', () => {
     const tracker = installTerminalImeCompositionTracker(null)
     expect(tracker.isActive()).toBe(false)
     expect(tracker.isCandidateKeyGuardActive()).toBe(false)
+    expect(tracker.isCommitKeypressGuardActive()).toBe(false)
     expect(() => tracker.dispose()).not.toThrow()
   })
 
